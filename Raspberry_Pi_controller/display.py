@@ -16,6 +16,10 @@ import serial
 
 
 number_of_lines = 20        # split in show_image()
+number_of_columns = 24
+max_column_value = (2**24)-1
+
+#bytes_per_row = 4
 
 ###########################################################################
 
@@ -131,7 +135,7 @@ ho_ho_santa = [
 ]
  
 
-# converted from §.r
+# converted from Present.r
 present = [
 0 , 65664 , 181056 , 140352 ,
 130944 , 32256 , 524256 , 318240 ,
@@ -450,8 +454,11 @@ def release_display():
     ser.setRTS(0)
     time.sleep(0.1)
 
-newline = b"\r\n"
+newline_b = b"\r"
+newline_u = "\r"
 def send_line(data):
+    data = data.replace("\r\n", newline_u)
+    data = data.replace("\n", newline_u)
     bbytes = data.rstrip().encode('ascii')
     for c in bbytes:
         ser.write(bytes([c]))
@@ -460,8 +467,83 @@ def send_line(data):
     #print(newline)
     #time.sleep(0.1)
     #print(bbytes)
-    ser.write(newline)
+    ser.write(newline_b)
     time.sleep(0.05)
+
+def send_single_definition(data, stack_data_expected=0, extra_sleep_time=0):
+    print(">>>>>>>>>>>", data.encode('ascii'))
+    data = data.replace("\r\n", newline_u)
+    data = data.replace("\n", newline_u)
+    bbytes = data.strip().encode('ascii') + newline_b
+    for c in bbytes:
+        bytestring_to_send = bytes([c])
+        ser.write(bytestring_to_send)
+        echo = ser.read(1)
+        print(echo.replace(b'\r', b'\n').decode('latin_1'), end="")
+        #print("send", c, echo)
+        
+        if len(echo) == 0 or echo != bytestring_to_send:
+            print("ERROR: send_single_definition expected", c, "got", echo)
+            print_read_all();
+            return False
+    
+    # some commands might take a while to return
+    if extra_sleep_time != 0:
+        time.sleep(extra_sleep_time)
+
+    if stack_data_expected >= 0:
+        success, data = check_read_all(stack_data_expected)
+        if not success:
+            print("------- ERROR in reply to send_single_definition() - ABORTING -------")
+            return False
+
+    return True, data
+
+def send_echoed_block(bytestring):
+    print("send_echoed_block param length", len(bytestring))
+    for c in bytestring:
+        bytestring_to_send = bytes([c])
+        ser.write(bytestring_to_send)
+        #print(c)
+        echo = ser.read(1)
+        if len(echo) == 0 or echo != bytestring_to_send:
+            print("Expected(sent) ", bytestring_to_send, " got", echo)
+            return False
+    
+    return True
+
+def image_mode_send_and_wait(display_array, time):
+    if len(display_array) != number_of_lines:
+        print("--------- SHOW IMAGE SUPPLIED HEIGHT NOT %d ------" % number_of_lines)
+        return False
+
+    if time > 255 or time < 0:
+        print("------------- TIME RANGE HAS TO BE 0 to 255 --------")
+        return False
+
+    img_str = b">" + bytes([time])
+
+    for i in display_array:
+        if i > max_column_value:
+            print("-------INCORRECT VALUE FOR LINE %x --------", i)
+            return False
+        hi = (i >> 16) & 0xFF
+        mid = (i >> 8) & 0xFF
+        lo = i & 0xFF
+        img_str += bytes([hi, mid, lo])
+        
+    success = send_echoed_block(img_str)
+
+    if success:
+        old_timeout = ser.timeout
+        ser.timeout = 26
+        echo = ser.read(2)
+        ser.timeout = old_timeout
+        sucess = echo == b"DI"
+    else:
+        print()
+        print("****", ser.read(10000))
+    return success
 
 def print_read_all():
     data = ser.read(10000)
@@ -469,50 +551,139 @@ def print_read_all():
     data = data.replace(b'\r\n', b'\r')
     data = data.replace(b'\r', b'\r\n')
     data = data.rstrip()
-    print("[[[", data.decode('ascii'))
+    print("[[[", data.decode('latin_1')) # just make it 8-bit rather than 'ascii' to stop encoding errors
 
-def check_read_all():
+def ok_check(sdata, stack_data_expected):
+    if stack_data_expected > 0:
+        if not sdata.endswith("]") or "ok <0>[" not in sdata:
+            return False
+        i = sdata.rfind("[")
+        grab = sdata[i+1:-1]
+        print(">>>>"+grab+"<<<<<")
+        if sdata.count(" ", i+1, -1) != stack_data_expected:
+            print(sdata.count(" ", i+1, -1))
+            return False
+        return True
+    else:
+        return sdata.endswith("ok <0>[]")
+
+def check_read_all(stack_data_expected=0):
     data = ser.read(10000)
     data = data.replace(b'\r\n', b'\r')
     data = data.replace(b'\r', b'\r\n')
     data = data.rstrip()
     #print(data)
-    sdata = data.decode('ascii')
+    sdata = data.decode('latin_1') # just make it 8-bit rather than 'ascii' to stop encoding errors
     print("<<<", sdata)
-    return sdata.endswith("ok <0>[]") and not "Duplicate word" in sdata, sdata
+    return ok_check(sdata, stack_data_expected) and not "Duplicate word" in sdata, sdata
     # and not sdata.endswith("ok <0>[Underflow]")
 
 
 
 # There is a 16 byte hardware buffer for both UARTS, but
-# no overrun protection.
+# no overrun protection.
 #   #TIB    -> length of input buffer
 #   TIB     -> start of text input buffer
 #   SOURCE  -> start of source for processing, and length to process. address = TIB usually
 #   PAD     ->  c-addr is the address of a transient region that can be used to hold data for intermediate processing. 
-"""
-  80 CELLS VSPACE$ in
-variable ptr
 
+# process
+cmd_ptr_forth = "variable cmd_ptr"
+wait_time_forth = "variable wait_time"
+
+#variable next_display
+# get_next ( read_ptr -- read_ptr next_key )
+get_next_forth = """
+: get_next
+    DUP cmd_ptr @ = IF
+        KEY dup EMIT
+    ELSE
+        dup C@
+        swap CHAR+ swap
+    THEN
+; 
+"""
+
+# process_req ( -- buffer|0) also wait_time is set
+process_request_forth ="""
+: process_req
+    TIB get_next
+    [CHAR] > =  IF
+        get_next wait_time !
+        num_rows FOR
+            get_next 256 * swap get_next rot + 256 * swap get_next rot +
+            img I CELLS + !
+        NEXT
+        img
+    ELSE
+        [CHAR] ? EMIT 0
+    THEN
+;
+"""
+#  #PAD 80 < IF ." -----PAD TOO SMALL" ELSE
+#  THEN
+
+# display_cmd ( -- ) 
+# Generally: receives images over serial bus while displaying image
+# Initially: waits for image packet. 
+# Afterwards reads keys while displaying image, then will wait for more keys
+# to complete image.
+# 
+display_command_forth = """
 : display_cmd
-    5 *
+  TIB cmd_ptr !
+  BEGIN
+    process_req dup
+  WHILE
+    wait_time @ 5 *
     FOR
         dup display1
-        KEY? IF
-            KEY ptr !
-        END
+        BEGIN KEY? WHILE
+            KEY dup cmd_ptr C! EMIT
+            cmd_ptr @ CHAR+ cmd_ptr !
+        REPEAT
     NEXT
     drop
+    ." DI"
+  REPEAT
+  drop
+  ." display_cmd finished" CR
 ;
 """
 
+def enable_image_mode():
+    success = send_single_definition(cmd_ptr_forth)
+    if not success:
+        print("------- ERROR enable_image_mode a - ABORTING -------")
+        return False
 
+    success = send_single_definition(wait_time_forth)
+    if not success:
+        print("------- ERROR enable_image_mode b - ABORTING -------")
+        return False
 
-blank_image = "20 CELLS VSPACE$ img "
+    success = send_single_definition(get_next_forth)
+    if not success:
+        print("------- ERROR enable_image_mode 1 - ABORTING -------")
+        return False
 
-# dimg ( tenths image <20-numbers> )
-image_from_stack = ": dimg num_rows FOR I CELLS img + ! NEXT img swap display ;"
+    success = send_single_definition(process_request_forth)
+    if not success:
+        print("------- ERROR enable_image_mode 2 - ABORTING -------")
+        return False
 
+    success = send_single_definition(display_command_forth)
+    if not success:
+        print("------- ERROR enable_image_mode 3 - ABORTING -------")
+        return False
+
+    display_enable = "display_cmd"
+    success = send_single_definition(display_enable, stack_data_expected = -1)
+    if not success:
+        print("------- ERROR enable_image_mode 4 - ABORTING -------")
+        return False
+
+    return True
 
 #all_on =    \
 #"&ffffff &ffffff &ffffff &ffffff " +   \
@@ -523,52 +694,72 @@ image_from_stack = ": dimg num_rows FOR I CELLS img + ! NEXT img swap display ;"
 #"&ffffff &ffffff &ffffff &ffffff " +   \
 #"dimg"
 
-def setup_basics():
-    
-    # make a data space
-    send_line(blank_image)
-    success, _ = check_read_all()
+def is_base_ok():
+    success, data = send_single_definition("RPi_BASE")
     if not success:
-        print("------- ERROR - ABORTING -------")
+        print(" ---- ERROR no ok for RPi_BASE query- ABORTING ----- ")
+        return False
+    if "*YES*" not in data:
+        print(" ---- ERROR RPi_BASE didn't confirm - ABORTING ----- ")
+        return False
+    return True
+
+def setup_basics():
+    if not is_base_ok():
+        return
+
+    # make a data space
+    define_img = "%d CELLS VSPACE$ img " % number_of_lines
+    success = send_single_definition(define_img)
+    if not success:
+        print("------- ERROR allowing img space - ABORTING -------")
         return False
 
     # make dimg
-    send_line(image_from_stack)
-    success, _ = check_read_all()
+    # dimg ( tenths image <%d-numbers> )
+    define_dimg = ": dimg num_rows FOR I CELLS img + ! NEXT img swap display ;"
+    success = send_single_definition(define_dimg)
     if not success:
-        print("------- ERROR - ABORTING -------")
+        print("------- ERROR defining dimg - ABORTING -------")
+        return False
+
+    # set up display
+    display_setup = "column_setup row_setup rows_off"
+    success = send_single_definition(display_setup)
+    if not success:
+        print("------- ERROR setting up display - ABORTING -------")
         return False
 
     return True
 
 
+
 def show_image(t, my_image):
     
     if len(my_image) != number_of_lines:
-        print("--------- SHOW IMAGE SUPPLIED WTIH NOT 24 ------")
+        print("--------- SHOW IMAGE SUPPLIED HEIGHT NOT %d ------" % number_of_lines)
         return False
 
     params1 = [ str(int(t * 10)) ]
 
     for i in range(0,7):
         params1.append("&%x" % my_image[i])
-    send_line(" ".join(params1))
+    success = send_single_definition(" ".join(params1), stack_data_expected=8)
+    if success: 
+ 
+        params2 = []
+        for i in range(7,14):
+            params2.append("&%x" % my_image[i])
+        success = send_single_definition(" ".join(params2), stack_data_expected=15)
+        
+        if success:
+            params3 = []
+            for i in range(14,number_of_lines):
+                params3.append("&%x" % my_image[i])
+            success = send_single_definition(" ".join(params3) + " dimg", stack_data_expected=0, extra_sleep_time=t)
 
-    params2 = []
-    for i in range(7,14):
-        params2.append("&%x" % my_image[i])
-    send_line(" ".join(params2))
-
-    params3 = []
-    for i in range(14,20):
-        params3.append("&%x" % my_image[i])
-    send_line(" ".join(params3) + " dimg")
-
-    time.sleep(t)
-
-    success, _ = check_read_all()
     if not success:
-        print("------- ERROR - ABORTING -------")
+        print("------- ERROR show image failed - ABORTING -------")
         return False
     return True
 
@@ -582,17 +773,6 @@ def miniterm():
         except KeyboardInterrupt:
             break
 
-
-def is_base_ok():
-    send_line("RPi_BASE")
-    success, data = check_read_all()
-    if not success:
-        print(" ---- ERROR - ABORTING ----- ")
-        return False
-    if "*YES*" not in data:
-        print(" ---- ERROR - ABORTING ----- ")
-        return False
-    return True
 
 
 def load_file(filename):
@@ -643,14 +823,9 @@ def display_all_on():
     for i in range(number_of_lines):
         all_on.append(0xffffff)
     
-    if not is_base_ok():
-        return
-    if not setup_basics():
-        return
     if not show_image(1, all_on):
         return
 
-my_ser = None
 
 def establish_comms():
     global ser
@@ -662,31 +837,52 @@ def establish_comms():
     
     print_read_all()
 
+
+########################################################
+# Command stubs
+#
+
 def test_command():
     establish_comms()
     
-    send_line("")
+    send_single_definition("")
     print_read_all()
-    send_line("12 25 + .")
+    send_single_definition("12 25 + .")
     print_read_all()
     time.sleep(1)
     print_read_all()
 
 def all_on_command():
     establish_comms()
-    
+    if not setup_basics():
+        return
+
     display_all_on()
     miniterm()
 
 def halloween_slideshow():
     establish_comms()
-    
-    pass
+    if not setup_basics():
+        return
+    if not enable_image_mode():
+        return
+    for display in halloween_list:
+        locally_print_image(display[0])
+        result = image_mode_send_and_wait(display[0], display[1])
+        if result == False:
+            return
 
 def xmas_slideshow():
     establish_comms()
-    
-    pass
+    if not setup_basics():
+        return
+    if not enable_image_mode():
+        return
+    for display in xmas_list:
+        locally_print_image(display[0])
+        result = image_mode_send_and_wait(display[0], display[1])
+        if result == False:
+            return
 
 def new_command():
     establish_comms()
@@ -699,11 +895,20 @@ def demo_xmas_command():
     for display in xmas_list:
         locally_print_image(display[0])
         time.sleep(display[1]/10)
+    miniterm()
 
 def demo_halloween_command():
     for display in halloween_list:
         locally_print_image(display[0])
         time.sleep(display[1]/10)
+
+def miniterm_command():
+    establish_comms()
+    miniterm()
+
+def reflash_forth_command():
+    print("NOT IMPLEMENTED YET")
+    print("Please use lpc21isp instead")
 
 command_list = []
 
@@ -714,9 +919,10 @@ def help_command():
     for c in command_list:
         print("%14s - %s" % (c[0], c[2]))
 
+
 command_list = [
     [ "test", test_command, "Send a simple sequence to the Forth board to test communication", ],
-    [ "term", miniterm, "Start a crude terminal with access to the Forth board", ],
+    [ "term", miniterm_command, "Start a crude terminal with access to the Forth board", ],
     [ "all", all_on_command, "Turn all the LEDS on for 1 second, then go into terminal mode"],
     [ "xmas", xmas_slideshow, "Do the Xmas slideshow"],
     [ "halloween", halloween_slideshow, "Do the Halloween slideshow"],
@@ -724,6 +930,7 @@ command_list = [
     [ "help", help_command, "show this list"],
     [ "demo_xmas", demo_xmas_command, "Show xmas locally only"],
     [ "demo_halloween", demo_halloween_command, "Show Halloween locally only"],
+    [ "reflash_forth", reflash_forth_command, "NOT IMPLEMENTED YET"]
 ]
 
 #if len(sys.argv) == 1:
