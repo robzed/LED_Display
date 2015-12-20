@@ -501,15 +501,47 @@ def send_single_definition(data, stack_data_expected=0, extra_sleep_time=0):
 
 def send_echoed_block(bytestring):
     print("send_echoed_block param length", len(bytestring))
-    for c in bytestring:
-        bytestring_to_send = bytes([c])
-        ser.write(bytestring_to_send)
-        #print(c)
-        echo = ser.read(1)
-        if len(echo) == 0 or echo != bytestring_to_send:
-            print("Expected(sent) ", bytestring_to_send, " got", echo)
+    i = 0
+    ri = 0
+    while True:
+        bytestring_to_send = bytestring[i:i+8]
+        if len(bytestring_to_send) == 0:
+            break
+
+        i += min(8, len(bytestring)-i)
+        
+        ser.write(bytestring_to_send)   # send up to 8 (serial buffer = 16)
+        
+        # wait for at least one character to come back before sending more
+        # if there are more than 8 characters outstanding, then we need to wait 
+        # for at least 8 so that we don't fill the serial FIFO
+        if (i - ri) <= 8:
+            minimum_bytes_to_wait_for = 1
+        else:
+            minimum_bytes_to_wait_for = 8
+        bytes_waiting = ser.inWaiting()
+        if bytes_waiting > minimum_bytes_to_wait_for:
+            bytes_to_wait_for = bytes_waiting
+        else:
+            bytes_to_wait_for = minimum_bytes_to_wait_for
+        
+        echo = ser.read(bytes_to_wait_for)
+
+        if len(echo) == 0 or echo != bytestring[ri:ri+len(echo)]:
+            print("Expected(sent) ", bytestring[ri:ri+len(echo)], " got", echo)
+            print("i", i, "ri", ri, "bytes_waiting", bytes_waiting, "min", minimum_bytes_to_wait_for, "wait", bytes_to_wait_for, "len", len(echo))
             return False
+        ri += len(echo)
     
+    # wait for the remainder of the bytes
+    while i-ri:
+        echo = ser.read(i-ri)
+        if len(echo) == 0 or echo != bytestring[ri:ri+len(echo)]:
+            print("Expected(sent) ", bytestring[ri:i], " got", echo)
+            print("i", i, "ri", ri, "len", len(echo))
+            return False
+        ri += len(echo)
+
     return True
 
 def image_mode_send_and_wait(display_array, time):
@@ -866,11 +898,16 @@ def halloween_slideshow():
         return
     if not enable_image_mode():
         return
-    for display in halloween_list:
-        locally_print_image(display[0])
-        result = image_mode_send_and_wait(display[0], display[1])
-        if result == False:
-            return
+    while True:
+        try:
+            for display in halloween_list:
+                locally_print_image(display[0])
+                result = image_mode_send_and_wait(display[0], display[1])
+                if result == False:
+                    return
+        except KeyboardInterrupt:
+            print("Stopped")
+            break
 
 def xmas_slideshow():
     establish_comms()
@@ -878,11 +915,16 @@ def xmas_slideshow():
         return
     if not enable_image_mode():
         return
-    for display in xmas_list:
-        locally_print_image(display[0])
-        result = image_mode_send_and_wait(display[0], display[1])
-        if result == False:
-            return
+    while True:
+        try:
+            for display in xmas_list:
+                locally_print_image(display[0])
+                result = image_mode_send_and_wait(display[0], display[1])
+                if result == False:
+                    return
+        except KeyboardInterrupt:
+            print("Stopped")
+            break
 
 def new_command():
     establish_comms()
