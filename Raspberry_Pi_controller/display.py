@@ -691,6 +691,77 @@ process_request_forth ="""
 #  #PAD 80 < IF ." -----PAD TOO SMALL" ELSE
 #  THEN
 
+# RESULTS FROM THIS TEST:
+# 1000 takes 86 ms counts. Therefore 1ms = 11.6 loops. 
+# since we 115200 is 11.52 each loop, but a 'screen' only takes 60+2
+# we should be 3.1 (4) each loop (there are 20 lines). Say 5 to be safe.
+# Then we should be able to switch images every 20ms (which is much faster 
+# than we currently do, and the code is limited to switching every 100ms).
+test_1ms_forth = """
+: test_1ms
+    // get timer value
+    &E0008008 @
+    // wait for the timer to change value
+    BEGIN
+        dup &E0008008 @ <>
+    UNTIL
+    drop 
+    &E0008008 @
+
+    // check for keys
+    1000 FOR
+        KEY? IF
+            KEY dup cmd_ptr @ C! EMIT
+            1 cmd_ptr +!
+        THEN
+        33 dup cmd_ptr @ C! EMIT
+        0 cmd_ptr +!
+    NEXT
+    
+    &E0008008 @
+    swap - .
+;
+"""
+
+rx1ms_forth = """
+: rx1ms
+    // get timer value
+    &E0008008 @
+
+    // check for keys
+    5 FOR
+        KEY? IF
+            KEY dup cmd_ptr @ C! EMIT
+            1 cmd_ptr +!
+        THEN
+    NEXT
+    
+    // wait for the timer to change value
+    BEGIN
+        dup &E0008008 @ <>
+    UNTIL
+    drop
+;
+"""
+
+display1rx_forth = """
+: display1rx   // ( image -- )
+    num_rows FOR
+        dup @ write_column
+        I select_row
+        CELL+
+        rx1ms
+        rows_off
+    NEXT
+    drop
+;
+"""
+#        BEGIN KEY? WHILE
+#            KEY dup cmd_ptr @ C! EMIT
+#            cmd_ptr @ CHAR+ cmd_ptr !
+#        REPEAT
+
+
 # display_cmd ( -- ) 
 # Generally: receives images over serial bus while displaying image
 # Initially: waits for image packet. 
@@ -705,12 +776,7 @@ display_command_forth = """
   WHILE
     wait_time @ 5 *
     FOR
-        dup display1
-
-        BEGIN KEY? WHILE
-            KEY dup cmd_ptr @ C! EMIT
-            cmd_ptr @ CHAR+ cmd_ptr !
-        REPEAT
+        dup display1rx
     NEXT
     drop
   REPEAT
@@ -740,9 +806,24 @@ def enable_image_mode():
         print("------- ERROR enable_image_mode 2 - ABORTING -------")
         return False
 
+    #success = send_single_definition(test_1ms_forth)
+    #if not success:
+    #    print("------- ERROR enable_image_mode 3x - ABORTING -------")
+    #    return False
+
+    success = send_single_definition(rx1ms_forth)
+    if not success:
+        print("------- ERROR enable_image_mode 3a - ABORTING -------")
+        return False
+
+    success = send_single_definition(display1rx_forth)
+    if not success:
+        print("------- ERROR enable_image_mode 3b - ABORTING -------")
+        return False
+
     success = send_single_definition(display_command_forth)
     if not success:
-        print("------- ERROR enable_image_mode 3 - ABORTING -------")
+        print("------- ERROR enable_image_mode 3c - ABORTING -------")
         return False
 
     display_enable = "display_cmd"
