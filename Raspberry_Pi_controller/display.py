@@ -18,7 +18,7 @@ import serial
 number_of_lines = 20        # split in show_image()
 number_of_columns = 24
 max_column_value = (2**24)-1
-
+READ_TIMEOUT = 0.2
 #bytes_per_row = 4
 
 ###########################################################################
@@ -225,6 +225,7 @@ xmas_list = [
     [ xmas_tree_inv_2, 5],
     [ xmas_tree_inv_4, 5],
     [ xmas_tree_inv_0, 5],
+    
     [ all_off_image, 10],
     [ bauble, 20],
     [ Holly, 20],
@@ -237,7 +238,7 @@ xmas_list = [
     [ ho_ho_santa_closed_mouth, 5],
     [ ho_ho_santa, 5],
     [ ho_ho_santa_closed_mouth, 5],
-    
+      
     # New pictures
     [ rudolph, 20],
     [ present, 20],
@@ -246,7 +247,6 @@ xmas_list = [
     [ gingerbread_man3, 20],
     [ rudolph2, 20],
     [ snowman2, 20],
-    
     [ all_off_image, 10],
 ]
 
@@ -500,7 +500,7 @@ def send_single_definition(data, stack_data_expected=0, extra_sleep_time=0):
     return True, data
 
 def send_echoed_block(bytestring):
-    print("send_echoed_block param length", len(bytestring))
+    #print("send_echoed_block param length", len(bytestring))
     i = 0
     ri = 0
     while True:
@@ -519,9 +519,12 @@ def send_echoed_block(bytestring):
             minimum_bytes_to_wait_for = 1
         else:
             minimum_bytes_to_wait_for = 8
+        
+        max_bytes_to_wait_for = i-ri    # number sent but not received so far
+        
         bytes_waiting = ser.inWaiting()
         if bytes_waiting > minimum_bytes_to_wait_for:
-            bytes_to_wait_for = bytes_waiting
+            bytes_to_wait_for = min(bytes_waiting, max_bytes_to_wait_for)
         else:
             bytes_to_wait_for = minimum_bytes_to_wait_for
         
@@ -532,6 +535,7 @@ def send_echoed_block(bytestring):
             print("i", i, "ri", ri, "bytes_waiting", bytes_waiting, "min", minimum_bytes_to_wait_for, "wait", bytes_to_wait_for, "len", len(echo))
             return False
         ri += len(echo)
+        #print("       Got", echo, bytes_waiting,i, ri)
     
     # wait for the remainder of the bytes
     while i-ri:
@@ -541,19 +545,34 @@ def send_echoed_block(bytestring):
             print("i", i, "ri", ri, "len", len(echo))
             return False
         ri += len(echo)
+        #print("       GOT", echo, bytes_waiting,i, ri)
 
+    #print("All RX ok")
     return True
 
-def image_mode_send_and_wait(display_array, time):
+def wait_for_data(num_bytes, time):
+        #old_timeout = ser.timeout
+        #ser.timeout = 26
+        #echo = ser.read(2)
+        #ser.timeout = old_timeout
+        echo = b""
+        while len(echo) < num_bytes and time > 0:
+            echo += ser.read(1)
+            time -= READ_TIMEOUT        # this timing is rubbish - more bytes leaves this shorter and shorter
+
+        #print("  wait_for_data...... ", echo)
+        return echo
+    
+def image_mode_send_and_wait(display_array, display_time):
     if len(display_array) != number_of_lines:
         print("--------- SHOW IMAGE SUPPLIED HEIGHT NOT %d ------" % number_of_lines)
         return False
 
-    if time > 255 or time < 0:
-        print("------------- TIME RANGE HAS TO BE 0 to 255 --------")
+    if display_time > 255 or display_time < 0:
+        print("------------- display_time RANGE HAS TO BE 0 to 255 --------")
         return False
 
-    img_str = b">" + bytes([time])
+    img_str = b">" + bytes([display_time])
 
     for i in display_array:
         if i > max_column_value:
@@ -567,14 +586,25 @@ def image_mode_send_and_wait(display_array, time):
     success = send_echoed_block(img_str)
 
     if success:
-        old_timeout = ser.timeout
-        ser.timeout = 26
-        echo = ser.read(2)
-        ser.timeout = old_timeout
-        sucess = echo == b"DI"
-    else:
+        echo = wait_for_data(2, display_time+2) # slightly longer than display time
+        success = (echo == b"DI")
+        
+        # We can insert debug data between DI and $ and it will be shown by the Python
+        # This is for debugging the Forth image display.
+        #debugX = b""
+        #while True:
+        #    debug1 = ser.read(1)
+        #    if debug1 != b"":
+        #        debugX += debug1
+        #    #print(debug1, end='')
+        #    if debug1 == b"$":
+        #        print(debugX.decode('latin_1'))
+        #        break
+
+    if not success:
         print()
         print("****", ser.read(10000))
+        
     return success
 
 def print_read_all():
@@ -640,18 +670,24 @@ get_next_forth = """
 process_request_forth ="""
 : process_req
     TIB get_next
-    [CHAR] > =  IF
+    dup [CHAR] > = IF drop
         get_next wait_time !
         num_rows FOR
             get_next 256 * swap get_next rot + 256 * swap get_next rot +
             img I CELLS + !
         NEXT
+        TIB cmd_ptr !
+        ." DI"
         img
     ELSE
-        [CHAR] ? EMIT 0
+        [CHAR] ? EMIT EMIT  0
     THEN
+    swap drop
 ;
 """
+# debug prints: cmd_ptr C@ . SPACE cmd_ptr @ . SPACE TIB . SPACE
+
+
 #  #PAD 80 < IF ." -----PAD TOO SMALL" ELSE
 #  THEN
 
@@ -670,13 +706,13 @@ display_command_forth = """
     wait_time @ 5 *
     FOR
         dup display1
+
         BEGIN KEY? WHILE
-            KEY dup cmd_ptr C! EMIT
+            KEY dup cmd_ptr @ C! EMIT
             cmd_ptr @ CHAR+ cmd_ptr !
         REPEAT
     NEXT
     drop
-    ." DI"
   REPEAT
   drop
   ." display_cmd finished" CR
@@ -861,14 +897,16 @@ def display_all_on():
 
 def establish_comms():
     global ser
-    ser = serial.Serial ("/dev/ttyUSB0", 115200, timeout=0.2)    #Open named port
-    
+    ser = serial.Serial ("/dev/ttyUSB0", 115200, timeout=READ_TIMEOUT)    #Open named port
+    if not ser:
+        print("SERIAL PORT NOT OPENED - ABORTING")
+        exit(1)
+        
     reset_display()
     release_display()
     time.sleep(0.5)
     
     print_read_all()
-
 
 ########################################################
 # Command stubs
