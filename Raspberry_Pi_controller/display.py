@@ -5,6 +5,7 @@
 
 
 import sys
+from _datetime import date
 
 if sys.version_info.major < 3:
     print("Python 3 required")
@@ -13,7 +14,8 @@ if sys.version_info.major < 3:
 import time
 import serial
 
-
+import datetime
+from random import randint
 
 number_of_lines = 20        # split in show_image()
 number_of_columns = 24
@@ -989,6 +991,24 @@ def establish_comms():
     
     print_read_all()
 
+def convert_to_time(time_string):
+    return datetime.time(*(map(int, time_string.split(':'))))
+
+def offset_minutes(minutes):
+    return datetime.timedelta(0,0,0,0,minutes)
+
+def is_it_that_time_yet(my_time, offset_in_minutes):
+    return my_time > datetime.datetime.today().time()
+
+def wait_until(startTime):
+    while startTime > datetime.datetime.today().time():
+        print("Not", startTime, "yet ... waiting")
+        time.sleep(30)
+
+def combine_time_and_delta(t, delta):
+    return (datetime.datetime.combine(datetime.date(1,1,1),t) + delta).time()
+
+
 ########################################################
 # Command stubs
 #
@@ -1011,39 +1031,49 @@ def all_on_command():
     display_all_on()
     miniterm()
 
-def halloween_slideshow():
+def slideshow_base(my_list, finish_time=None):
     establish_comms()
     if not setup_basics():
-        return
+        return False
     if not enable_image_mode():
-        return
+        return False
     while True:
         try:
-            for display in halloween_list:
+            for display in my_list:
                 locally_print_image(display[0])
                 result = image_mode_send_and_wait(display[0], display[1])
                 if result == False:
-                    return
+                    return False
+                if finish_time is not None and is_it_that_time_yet(finish_time):
+                    return True
         except KeyboardInterrupt:
             print("Stopped")
             break
 
+    return False    # should never get here
+
+
 def xmas_slideshow():
-    establish_comms()
-    if not setup_basics():
-        return
-    if not enable_image_mode():
-        return
+    slideshow_base(xmas_list)
+
+def timer_slideshow_base(my_list, start_approx, finish_approx):
     while True:
-        try:
-            for display in xmas_list:
-                locally_print_image(display[0])
-                result = image_mode_send_and_wait(display[0], display[1])
-                if result == False:
-                    return
-        except KeyboardInterrupt:
-            print("Stopped")
+        wait_until(combine_time_and_delta(convert_to_time(start_approx), offset_minutes(randint(0,20))))
+        finish = combine_time_and_delta(convert_to_time(finish_approx), offset_minutes(randint(0,20)))
+        print("Will finish at", finish)
+        finish_time_met = slideshow_base(my_list, finish_time=finish)
+        if not finish_time_met:
             break
+        print("Turned off")
+
+def halloween_slideshow():
+    slideshow_base(halloween_list)
+
+def xmas_timer_slideshow():
+    timer_slideshow_base(xmas_list, "15:00", "10:50")
+
+def halloween_timer_slideshow():
+    timer_slideshow_base(halloween_list, "16:00", "10:50")
 
 def new_command():
     establish_comms()
@@ -1087,6 +1117,8 @@ command_list = [
     [ "all", all_on_command, "Turn all the LEDS on for 1 second, then go into terminal mode"],
     [ "xmas", xmas_slideshow, "Do the Xmas slideshow"],
     [ "halloween", halloween_slideshow, "Do the Halloween slideshow"],
+    [ "xmas-timer", xmas_timer_slideshow, "Do the Xmas slideshow from 3pm to 11pm (with randomness)"],
+    [ "halloween-timer", halloween_timer_slideshow, "Do the Halloween slideshow from 4pm to 11pm (with randomness)"],
     [ "new", new_command, "initialise forth board with base word set"],
     [ "help", help_command, "show this list"],
     [ "demo_xmas", demo_xmas_command, "Show xmas locally only"],
