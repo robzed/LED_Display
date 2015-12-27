@@ -997,7 +997,7 @@ def convert_to_time(time_string):
 def offset_minutes(minutes):
     return datetime.timedelta(0,0,0,0,minutes)
 
-def is_it_that_time_yet(my_time, offset_in_minutes):
+def is_it_that_time_yet(my_time):
     return my_time > datetime.datetime.today().time()
 
 def wait_until(startTime):
