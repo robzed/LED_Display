@@ -1058,8 +1058,9 @@ def xmas_slideshow():
 
 def timer_slideshow_base(my_list, start_approx, finish_approx):
     while True:
-        wait_until(combine_time_and_delta(convert_to_time(start_approx), offset_minutes(randint(0,20))))
         finish = combine_time_and_delta(convert_to_time(finish_approx), offset_minutes(randint(0,20)))
+        print("Will finish at", finish)
+        wait_until(combine_time_and_delta(convert_to_time(start_approx), offset_minutes(randint(0,20))))
         print("Will finish at", finish)
         finish_time_met = slideshow_base(my_list, finish_time=finish)
         if not finish_time_met:
