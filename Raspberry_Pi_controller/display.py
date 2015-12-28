@@ -1001,8 +1001,8 @@ def is_it_that_time_yet(my_time):
     return my_time > datetime.datetime.today().time()
 
 def wait_until(startTime):
+    print("Not", startTime, "yet ... waiting")
     while startTime > datetime.datetime.today().time():
-        print("Not", startTime, "yet ... waiting")
         time.sleep(30)
 
 def combine_time_and_delta(t, delta):
