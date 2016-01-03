@@ -1028,7 +1028,11 @@ def all_on_command():
     if not setup_basics():
         return
 
-    display_all_on()
+    while(True):
+        try:
+            display_all_on()
+        except KeyboardInterrupt:
+            break
     miniterm()
 
 def slideshow_base(my_list, finish_time=None):
@@ -1071,10 +1075,10 @@ def halloween_slideshow():
     slideshow_base(halloween_list)
 
 def xmas_timer_slideshow():
-    timer_slideshow_base(xmas_list, "15:00", "10:50")
+    timer_slideshow_base(xmas_list, "15:00", "22:50")
 
 def halloween_timer_slideshow():
-    timer_slideshow_base(halloween_list, "16:00", "10:50")
+    timer_slideshow_base(halloween_list, "16:00", "22:50")
 
 def new_command():
     establish_comms()
@@ -1115,7 +1119,7 @@ def help_command():
 command_list = [
     [ "test", test_command, "Send a simple sequence to the Forth board to test communication", ],
     [ "term", miniterm_command, "Start a crude terminal with access to the Forth board", ],
-    [ "all", all_on_command, "Turn all the LEDS on for 1 second, then go into terminal mode"],
+    [ "all", all_on_command, "Turn all the LEDS on repeatly until Ctrl-C, then go into terminal mode"],
     [ "xmas", xmas_slideshow, "Do the Xmas slideshow"],
     [ "halloween", halloween_slideshow, "Do the Halloween slideshow"],
     [ "xmas-timer", xmas_timer_slideshow, "Do the Xmas slideshow from 3pm to 11pm (with randomness)"],
